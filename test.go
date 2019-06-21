@@ -1,19 +1,22 @@
 package main
 
 import (
+	"fmt"
 	"image"
 	"image/color"
 	"image/png"
 	"math"
 	"os"
+	"time"
 )
 
 type Vec3 struct {
 	x, y, z float64
 }
 
-const HEIGHT int = 800
-const WIDTH int = 800
+const SCALE int = 4
+const HEIGHT = 800 * SCALE
+const WIDTH = 800 * SCALE
 const HF = float64(HEIGHT)
 const WF = float64(WIDTH)
 
@@ -98,20 +101,43 @@ func march(ro Vec3, rd Vec3) color.RGBA {
 	}
 }
 
+type packet struct {
+	col  color.RGBA
+	x, y int
+}
+
+func marchgo(chn chan packet) {
+	go func() {
+		for x := 0; x < WIDTH; x++ {
+			xf := ((float64(x) / WF) * 2.0) - 1.0
+			go func(x int, xf float64) {
+				for y := 0; y < HEIGHT; y++ {
+					ro := Vec3{x: 0.0, y: 0.0, z: -10.0}
+					yf := ((float64(y) / HF) * 2.0) - 1.0
+					rd := Vec3{x: xf, y: yf, z: 1.0}
+					chn <- packet{col: march(ro, rd), x: x, y: y}
+				}
+			}(x, xf)
+		}
+	}()
+}
+
 func main() {
 	file, err := os.Create("temp.png")
 	check(err)
 	img := image.NewNRGBA64(image.Rect(0, 0, WIDTH, HEIGHT))
-	for x := 0; x < WIDTH; x++ {
-		xf := ((float64(x) / WF) * 2.0) - 1.0
-		for y := 0; y < HEIGHT; y++ {
-			ro := Vec3{x: 0.0, y: 0.0, z: -10.0}
-			yf := ((float64(y) / HF) * 2.0) - 1.0
-			rd := Vec3{x: xf, y: yf, z: 1.0}
-			col := march(ro, rd)
-			img.Set(x, y, col)
-		}
+	chn := make(chan packet)
+
+	start := time.Now()
+	go marchgo(chn)
+	limit := WIDTH * HEIGHT
+	for i := 0; i < limit; i++ {
+		pack := <-chn
+		img.Set(pack.x, pack.y, pack.col)
 	}
+	end := time.Now()
+
+	fmt.Printf("took %v\n", end.Sub(start))
 	err = png.Encode(file, img)
 	check(err)
 }
