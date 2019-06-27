@@ -14,7 +14,65 @@ type Vec3 struct {
 	x, y, z float64
 }
 
-const SCALE int = 4
+type shape interface {
+	test(r Vec3) float64
+	color() Vec3
+}
+
+type sphere struct {
+	p, t, c Vec3
+	r       float64
+}
+
+func (s *sphere) test(r Vec3) float64 {
+	rel := rotXYZ(r, s.t)
+	t := Vec3{
+		x: rel.x - s.p.x,
+		y: rel.y - s.p.y,
+		z: rel.z - s.p.z,
+	}
+	return length(t) - s.r
+}
+
+func (s *sphere) color() Vec3 {
+	return s.c
+}
+
+type box struct {
+	p, t, c Vec3
+}
+
+func (b *box) test(r Vec3) float64 {
+	rel := rotXYZ(r, b.t)
+	d := Vec3{
+		x: math.Abs(rel.x) - b.p.x,
+		y: math.Abs(rel.y) - b.p.y,
+		z: math.Abs(rel.z) - b.p.z,
+	}
+	return length(maxVec3(d, 0.)) + math.Min(math.Max(d.x, math.Max(d.y, d.z)), 0.)
+}
+
+func (b *box) color() Vec3 {
+	return b.c
+}
+
+type torus struct {
+	p, t, c Vec3
+	x, y    float64
+}
+
+func (t *torus) test(r Vec3) float64 {
+	rel := rotXYZ(r, t.t)
+	qx := length2(rel.x, rel.z) - t.x
+	qy := rel.y
+	return length2(qx, qy) - t.y
+}
+
+func (t *torus) color() Vec3 {
+	return t.c
+}
+
+const SCALE int = 1
 const HEIGHT = 800 * SCALE
 const WIDTH = 800 * SCALE
 const HF = float64(HEIGHT)
@@ -38,6 +96,34 @@ func check(e error) {
 	}
 }
 
+func rotX(v Vec3, a float64) Vec3 {
+	return Vec3{
+		x: v.x,
+		y: v.y*math.Cos(a) + v.z*-math.Sin(a),
+		z: v.y*math.Sin(a) + v.z*math.Cos(a),
+	}
+}
+
+func rotY(v Vec3, a float64) Vec3 {
+	return Vec3{
+		x: v.x*math.Cos(a) + v.z*math.Sin(a),
+		y: v.y,
+		z: v.x*-math.Sin(a) + v.z*math.Cos(a),
+	}
+}
+
+func rotZ(v Vec3, a float64) Vec3 {
+	return Vec3{
+		x: v.x*math.Cos(a) + v.y*-math.Sin(a),
+		y: v.x*math.Sin(a) + v.y*math.Cos(a),
+		z: v.z,
+	}
+}
+
+func rotXYZ(v, t Vec3) Vec3 {
+	return rotX(rotY(rotZ(v, t.z), t.y), t.x)
+}
+
 func sphereTest(r Vec3) float64 {
 	s := Vec3{x: 0.0, y: 0.0, z: 0.0}
 	t := Vec3{
@@ -48,8 +134,29 @@ func sphereTest(r Vec3) float64 {
 	return length(t) - 1.5
 }
 
+func boxTest(r Vec3) float64 {
+	b := Vec3{x: 1., y: 1., z: 0.5}
+	d := Vec3{
+		x: math.Abs(r.x) - b.x,
+		y: math.Abs(r.y) - b.y,
+		z: math.Abs(r.z) - b.z,
+	}
+	return length(maxVec3(d, 0.)) + math.Min(math.Max(d.x, math.Max(d.y, d.z)), 0.)
+}
+
+func maxVec3(v Vec3, m float64) Vec3 {
+	return Vec3{
+		x: math.Max(v.x, m),
+		y: math.Max(v.y, m),
+		z: math.Max(v.z, m),
+	}
+}
+
 func length(v Vec3) float64 {
 	return math.Sqrt(math.Pow(v.x, 2.0) + math.Pow(v.y, 2.0) + math.Pow(v.z, 2.0))
+}
+func length2(x, y float64) float64 {
+	return math.Sqrt(math.Pow(x, 2.0) + math.Pow(y, 2.0))
 }
 
 func normalize(v Vec3) Vec3 {
@@ -61,34 +168,80 @@ func dot(a, b Vec3) float64 {
 	return a.x*b.x + a.y*b.y + a.z*b.z
 }
 
-func estimateNormal(r Vec3) Vec3 {
+func shapeColor(diff float64, col Vec3) color.RGBA {
+	return color.RGBA{
+		R: uint8(255.0 * col.x * diff),
+		G: uint8(255.0 * col.y * diff),
+		B: uint8(255.0 * col.z * diff),
+		A: 255,
+	}
+}
+
+func estimateNormal(r Vec3, sh shape) Vec3 {
 	return normalize(Vec3{
-		x: sphereTest(Vec3{r.x + E, r.y, r.z}) - sphereTest(Vec3{r.x - E, r.y, r.z}),
-		y: sphereTest(Vec3{r.x, r.y + E, r.z}) - sphereTest(Vec3{r.x, r.y - E, r.z}),
-		z: sphereTest(Vec3{r.x, r.y, r.z + E}) - sphereTest(Vec3{r.x, r.y, r.z - E}),
+		x: sh.test(Vec3{r.x + E, r.y, r.z}) - sh.test(Vec3{r.x - E, r.y, r.z}),
+		y: sh.test(Vec3{r.x, r.y + E, r.z}) - sh.test(Vec3{r.x, r.y - E, r.z}),
+		z: sh.test(Vec3{r.x, r.y, r.z + E}) - sh.test(Vec3{r.x, r.y, r.z - E}),
 	})
 }
 
+func macroTest(r Vec3, shapes ...shape) (float64, Vec3) {
+	res := 1000000000.0
+	var col Vec3
+	var val float64
+	for _, sh := range shapes {
+		val = math.Min(sh.test(r), res)
+		if val < res {
+			res = val
+			col = sh.color()
+		}
+	}
+	return res, col
+}
+
+func macroEstNorm(r Vec3, shapes ...shape) Vec3 {
+	res := Vec3{x: 1000000000.0, y: 1000000000.0, z: 1000000000.0}
+	for _, sh := range shapes {
+		n := estimateNormal(r, sh)
+		res.x = math.Min(n.x, res.x)
+		res.y = math.Min(n.y, res.y)
+		res.z = math.Min(n.z, res.z)
+	}
+	return res
+}
+
 func march(ro Vec3, rd Vec3) color.RGBA {
-	lightPos := Vec3{x: 10.0, y: 100.0, z: -10.0}
+	lightPos := Vec3{x: 0.0, y: 0.0, z: -5.0}
 	r, g, b := 0.0, 0.0, 0.0
 	distTraveled := 0.0
+	sh1 := torus{
+		p: Vec3{x: 1.0, y: 1.0, z: 1.0},
+		t: Vec3{x: 45.0, y: 45.0, z: 45.0},
+		c: Vec3{x: 0.5, y: 0.25, z: 0.1},
+		x: 3.5,
+		y: 0.25,
+	}
+	sh2 := torus{
+		p: Vec3{x: 2.0, y: 1.0, z: 1.0},
+		t: Vec3{x: -90.0, y: 0.0, z: -90.0},
+		c: Vec3{x: 0.1, y: 0.75, z: 0.25},
+		x: 2.25,
+		y: 0.15,
+	}
+	sh3 := sphere{
+		p: Vec3{x: 0.0, y: 0.0, z: 0.0},
+		t: Vec3{x: 0.0, y: 0.0, z: 0.0},
+		c: Vec3{x: 0.1, y: 0.25, z: 0.75},
+		r: 0.75,
+	}
 	for step := 0; step < MAXITER; step++ {
 		finalPos := calcPos(ro, rd, distTraveled)
-		dist := sphereTest(finalPos)
+		dist, col := macroTest(finalPos, &sh1, &sh2, &sh3)
 		if dist < HIT {
-			r = 0.1
-			g = 0.7
-			b = 0.5
-			normal := estimateNormal(finalPos)
+			normal := macroEstNorm(finalPos, &sh1, &sh2, &sh3)
 			lightDir := normalize(Vec3{x: lightPos.x - finalPos.x, y: lightPos.y - finalPos.y, z: lightPos.z - finalPos.z})
 			diff := math.Max(dot(normal, lightDir), 0.0)
-			return color.RGBA{
-				R: uint8(255.0 * r * diff),
-				G: uint8(255.0 * g * diff),
-				B: uint8(255.0 * b * diff),
-				A: 255,
-			}
+			return shapeColor(diff, col)
 		}
 		distTraveled += dist
 	}
